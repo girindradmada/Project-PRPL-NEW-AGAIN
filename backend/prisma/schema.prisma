@@ -1,0 +1,91 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Enums
+enum SenderRole {
+  User
+  Bot
+}
+
+// Models
+
+model User {
+  userId       Int      @id @default(autoincrement()) @map("user_id")
+  username     String   @unique
+  password     String   
+  
+  // Relations (One-to-Many)
+  transactions Transaction[]
+  budgets      Budget[]
+  categories   Category[]
+  chatLogs     ChatLog[]
+
+  @@map("users") // Table name in DB
+}
+
+model Category {
+  categoryId   Int      @id @default(autoincrement()) @map("category_id")
+  userId       Int      @map("user_id")
+  name         String
+  
+  // Relations
+  user         User     @relation(fields: [userId], references: [userId])
+  transactions Transaction[]
+  budgets      Budget[]
+
+  @@map("categories")
+}
+
+model Transaction {
+  transId    Int      @id @default(autoincrement()) @map("trans_id")
+  userId     Int      @map("user_id")
+  categoryId Int      @map("category_id") // Changed to Int to match Category PK
+  amount     Decimal  @db.Decimal(10, 2)
+  merchant   String?  // Nullable
+  dateTime   DateTime @default(now()) @map("date_time")
+  rawText    String?  @map("raw_text") // Nullable
+
+  // Relations
+  user     User     @relation(fields: [userId], references: [userId])
+  category Category @relation(fields: [categoryId], references: [categoryId])
+
+  @@map("transactions")
+}
+
+model Budget {
+  budgetId    Int      @id @default(autoincrement()) @map("budget_id")
+  userId      Int      @map("user_id")
+  categoryId  Int      @map("category_id") // Changed to Int to match Category PK
+  limitAmount Decimal  @db.Decimal(10, 2) @map("limit_amount")
+  period      String   @default("Monthly")
+
+  // Relations
+  user     User     @relation(fields: [userId], references: [userId])
+  category Category @relation(fields: [categoryId], references: [categoryId])
+
+  @@map("budgets")
+}
+
+model ChatLog {
+  logId       Int        @id @default(autoincrement()) @map("log_id")
+  userId      Int        @map("user_id")
+  messageText String     @map("message_text")
+  sender      SenderRole // Uses the Enum defined above
+  timestamp   DateTime   @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [userId])
+
+  @@map("chat_logs")
+}
