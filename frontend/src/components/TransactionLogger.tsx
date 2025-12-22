@@ -1,13 +1,15 @@
 import { useState, useEffect } from 'react';
 import { Plus, Search, Filter, Calendar, DollarSign, Tag, ShoppingBag, Coffee, Car, Home, Zap, MoreHorizontal } from 'lucide-react';
 import { supabase } from '../lib/supabase';
-import { Transaction } from '../types/database';
-import { getCategoryId, getCategoryName } from "../lib/categoryMap";
+import { Transaction, Category } from '../types/database';
+// We don't need these external helpers if we define a safe one locally
+// import { getCategoryId, getCategoryName } from "../lib/categoryMap"; 
 import { dbToUI } from '../lib/converters';
 
 interface TransactionLoggerProps {
   transactions: Transaction[];
   setTransactions: (transactions: Transaction[]) => void;
+  // Passing categories is helpful for the dropdown, but we'll hardcode for now to keep it simple
 }
 
 const categoryIcons: Record<string, any> = {
@@ -16,6 +18,28 @@ const categoryIcons: Record<string, any> = {
   'Shopping': ShoppingBag,
   'Bills & Utilities': Zap,
   'Income': DollarSign,
+};
+
+// HELPER: Safely get category name from string OR object
+const getSafeCategoryName = (category: string | Category): string => {
+  if (typeof category === 'object' && category !== null) {
+    return category.name;
+  }
+  return String(category);
+};
+
+// HELPER: Map names to IDs (You should eventually replace this with real DB IDs)
+const getCategoryIdFromName = (name: string): number => {
+  const map: Record<string, number> = {
+    'Food & Dining': 1,
+    'Transportation': 2,
+    'Shopping': 3,
+    'Entertainment': 4,
+    'Bills & Utilities': 5,
+    'Income': 6,
+    'Other': 7
+  };
+  return map[name] || 7;
 };
 
 export function TransactionLogger({ transactions, setTransactions }: TransactionLoggerProps) {
@@ -36,7 +60,10 @@ export function TransactionLogger({ transactions, setTransactions }: Transaction
     const fetchTransactions = async () => {
       const { data, error } = await supabase
         .from('transactions')
-        .select('*')
+        .select(`
+          *,
+          category:categories(category_id, name, user_id)
+        `)
         .order('date_time', { ascending: false });
 
       if (error) {
@@ -44,7 +71,7 @@ export function TransactionLogger({ transactions, setTransactions }: Transaction
         return;
       }
 
-      // Convert DB rows → UI rows
+      // Convert DB rows -> UI rows
       const converted = data.map(dbToUI);
       setTransactions(converted);
     };
@@ -58,40 +85,49 @@ export function TransactionLogger({ transactions, setTransactions }: Transaction
   const handleAddTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    const { data, error } = await supabase
-      .from("transactions")
-      .insert({
-        user_id: 1,
-        category_id: getCategoryId(formData.category),
-        amount: parseFloat(formData.amount),
-        merchant: formData.merchant || null,
-        date_time: new Date(formData.date),
-        raw_text: formData.raw_text || null,
-      })
-      .select("*")
-      .single();
+    try {
+        const { data, error } = await supabase
+        .from("transactions")
+        .insert({
+            user_id: 1,
+            category_id: getCategoryIdFromName(formData.category), // Use local helper
+            amount: parseFloat(formData.amount),
+            merchant: formData.merchant || null,
+            date_time: new Date(formData.date).toISOString(), // Ensure ISO string
+            raw_text: formData.raw_text || null,
+        })
+        .select("*")
+        .single();
 
-    if (error) {
-      console.error("Supabase Insert Error:", error);
-      return;
+        if (error) {
+            console.error("Supabase Insert Error:", error);
+            alert("Error saving transaction");
+            return;
+        }
+
+        // Convert DB -> UI before adding to screen
+        // We manually attach the category name so the UI updates instantly without refetching
+        const newTransactionUI: Transaction = {
+            ...dbToUI(data),
+            category: formData.category // We know the name from the form
+        };
+
+        // Update UI instantly
+        setTransactions([newTransactionUI, ...transactions]);
+
+        // Reset form
+        setFormData({
+            merchant: "",
+            amount: "",
+            category: "Food & Dining",
+            date: new Date().toISOString().split("T")[0],
+            raw_text: "",
+        });
+
+        setShowAddForm(false);
+    } catch (err) {
+        console.error("Unexpected error:", err);
     }
-
-    // Convert DB → UI before adding to screen
-    const converted = dbToUI(data);
-
-    // Update UI instantly
-    setTransactions([converted, ...transactions]);
-
-    // Reset form
-    setFormData({
-      merchant: "",
-      amount: "",
-      category: "Food & Dining",
-      date: new Date().toISOString().split("T")[0],
-      raw_text: "",
-    });
-
-    setShowAddForm(false);
   };
 
   return (
@@ -184,8 +220,16 @@ export function TransactionLogger({ transactions, setTransactions }: Transaction
       {/* Transaction List */}
       <div className="space-y-2">
         {transactions.map((transaction) => {
-          const Icon = categoryIcons[transaction.category] || MoreHorizontal;
-          const isIncome = transaction.category === 'Income';
+          // FIX 1: Safe name extraction
+          const categoryName = getSafeCategoryName(transaction.category);
+          
+          // FIX 2: Safe icon lookup
+          const Icon = categoryIcons[categoryName] || MoreHorizontal;
+          const isIncome = categoryName === 'Income';
+
+          // Ensure date is valid before rendering
+          const dateObj = new Date(transaction.date_time);
+          const dateStr = isNaN(dateObj.getTime()) ? 'Invalid Date' : dateObj.toLocaleDateString();
 
           return (
             <div
@@ -201,18 +245,19 @@ export function TransactionLogger({ transactions, setTransactions }: Transaction
               </div>
 
               <div className="flex-1">
-                <p className="text-slate-900">{transaction.merchant || transaction.category}</p>
+                {/* FIX 3: Use categoryName string, not the object */}
+                <p className="text-slate-900">{transaction.merchant || categoryName}</p>
                 <div className="flex items-center gap-2 text-sm text-slate-600">
                   <Tag className="w-4 h-4" />
-                  <span>{transaction.category}</span>
+                  <span>{categoryName}</span>
                   <span>•</span>
                   <Calendar className="w-4 h-4" />
-                  <span>{new Date(transaction.date_time).toLocaleDateString()}</span>
+                  <span>{dateStr}</span>
                 </div>
               </div>
 
               <div className={`${isIncome ? 'text-green-600' : 'text-slate-900'}`}>
-                {isIncome ? '+' : '-'}${transaction.amount.toFixed(2)}
+                {isIncome ? '+' : '-'}${Number(transaction.amount).toFixed(2)}
               </div>
             </div>
           );
