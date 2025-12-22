@@ -1,4 +1,9 @@
 {
+  "scripts": {
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\""
+  },
   "dependencies": {
     "react": "^19.2.1",
     "react-dom": "^19.2.1"
@@ -6,6 +11,7 @@
   "devDependencies": {
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
+    "concurrently": "^9.2.1",
     "typescript": "^5.9.3"
   }
 }
