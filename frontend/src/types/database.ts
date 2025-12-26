@@ -10,7 +10,7 @@ export interface Transaction {
   trans_id: number;
   user_id: number;
   amount: number;
-  category: string;       
+  category: string | Category;  
   merchant: string | null;
   date_time: Date;
   raw_text: string | null;
@@ -29,9 +29,10 @@ export interface DBTransaction {
 export interface Budget {
   budget_id: number;
   user_id: number;
-  category: string;
+  category_id: number;
   limit_amount: number;
   period: string; // Default: 'Monthly'
+  category?: Category | string;
 }
 
 export interface Category {
