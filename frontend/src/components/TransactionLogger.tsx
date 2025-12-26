@@ -1,268 +1,156 @@
 import { useState, useEffect } from 'react';
-import { Plus, Search, Filter, Calendar, DollarSign, Tag, ShoppingBag, Coffee, Car, Home, Zap, MoreHorizontal } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { Search, Plus, ArrowDownLeft, ArrowUpRight, Loader2 } from 'lucide-react';
 import { Transaction, Category } from '../types/database';
-// We don't need these external helpers if we define a safe one locally
-// import { getCategoryId, getCategoryName } from "../lib/categoryMap"; 
-import { dbToUI } from '../lib/converters';
+import { AddTransactionModal } from './AddTransactionModal';
+import { supabase } from '../lib/supabase';       // Logic lives here
+import { dbToUI } from '../lib/converters';  // Logic lives here
 
 interface TransactionLoggerProps {
   transactions: Transaction[];
-  setTransactions: (transactions: Transaction[]) => void;
-  // Passing categories is helpful for the dropdown, but we'll hardcode for now to keep it simple
+  categories: Category[];
+  onDataLoaded: (t: Transaction[], c: Category[]) => void; // Pass fetched data up
+  onTransactionAdded: (t: Transaction) => void;
 }
 
-const categoryIcons: Record<string, any> = {
-  'Food & Dining': Coffee,
-  'Transportation': Car,
-  'Shopping': ShoppingBag,
-  'Bills & Utilities': Zap,
-  'Income': DollarSign,
-};
+export function TransactionLogger({ transactions, categories, onDataLoaded, onTransactionAdded }: TransactionLoggerProps) {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-// HELPER: Safely get category name from string OR object
-const getSafeCategoryName = (category: string | Category): string => {
-  if (typeof category === 'object' && category !== null) {
-    return category.name;
-  }
-  return String(category);
-};
-
-// HELPER: Map names to IDs (You should eventually replace this with real DB IDs)
-const getCategoryIdFromName = (name: string): number => {
-  const map: Record<string, number> = {
-    'Food & Dining': 1,
-    'Transportation': 2,
-    'Shopping': 3,
-    'Entertainment': 4,
-    'Bills & Utilities': 5,
-    'Income': 6,
-    'Other': 7
-  };
-  return map[name] || 7;
-};
-
-export function TransactionLogger({ transactions, setTransactions }: TransactionLoggerProps) {
-  const [showAddForm, setShowAddForm] = useState(false);
-
-  const [formData, setFormData] = useState({
-    merchant: '',
-    amount: '',
-    category: 'Food & Dining',
-    date: new Date().toISOString().split('T')[0],
-    raw_text: '',
-  });
-
-  // ===========================
-  // FETCH FROM DATABASE
-  // ===========================
+  // FETCH LOGIC: Get Transactions & Categories
   useEffect(() => {
-    const fetchTransactions = async () => {
-      const { data, error } = await supabase
-        .from('transactions')
-        .select(`
-          *,
-          category:categories(category_id, name, user_id)
-        `)
-        .order('date_time', { ascending: false });
+    async function fetchTransactions() {
+      try {
+        const user_id = 1; 
 
-      if (error) {
-        console.error(error);
-        return;
+        // 1. Get Transactions
+        const { data: txData, error: txError } = await supabase
+          .from('transactions')
+          .select('*, category:categories(*)')
+          .eq('user_id', user_id)
+          .order('date_time', { ascending: false });
+
+        if (txError) throw txError;
+
+        // 2. Get Categories
+        const { data: catData, error: catError } = await supabase
+          .from('categories')
+          .select('*')
+          .order('name');
+        
+        if (catError) throw catError;
+
+        // 3. Convert & Notify Parent
+        const cleanTransactions = (txData || []).map(dbToUI);
+        onDataLoaded(cleanTransactions, catData || []);
+
+      } catch (err) {
+        console.error("Error fetching transactions:", err);
+      } finally {
+        setLoading(false);
       }
-
-      // Convert DB rows -> UI rows
-      const converted = data.map(dbToUI);
-      setTransactions(converted);
-    };
+    }
 
     fetchTransactions();
-  }, []);
+  }, []); // Run once on mount
 
-  // ===========================
-  // ADD A NEW TRANSACTION
-  // ===========================
-  const handleAddTransaction = async (e: React.FormEvent) => {
-    e.preventDefault();
-
+  // SAVE LOGIC
+  const handleSaveTransaction = async (formData: any) => {
     try {
-        const { data, error } = await supabase
-        .from("transactions")
-        .insert({
-            user_id: 1,
-            category_id: getCategoryIdFromName(formData.category), // Use local helper
-            amount: parseFloat(formData.amount),
-            merchant: formData.merchant || null,
-            date_time: new Date(formData.date).toISOString(), // Ensure ISO string
-            raw_text: formData.raw_text || null,
-        })
-        .select("*")
+      const payload = {
+        user_id: 1,
+        amount: parseFloat(formData.amount),
+        category_id: parseInt(formData.categoryId),
+        merchant: formData.merchant,
+        date_time: new Date(formData.date).toISOString(),
+        raw_text: formData.merchant
+      };
+
+      const { data, error } = await supabase
+        .from('transactions')
+        .insert([payload])
+        .select('*, category:categories(*)')
         .single();
 
-        if (error) {
-            console.error("Supabase Insert Error:", error);
-            alert("Error saving transaction");
-            return;
-        }
+      if (error) throw error;
 
-        // Convert DB -> UI before adding to screen
-        // We manually attach the category name so the UI updates instantly without refetching
-        const newTransactionUI: Transaction = {
-            ...dbToUI(data),
-            category: formData.category // We know the name from the form
-        };
+      onTransactionAdded(dbToUI(data));
+      setIsModalOpen(false);
 
-        // Update UI instantly
-        setTransactions([newTransactionUI, ...transactions]);
-
-        // Reset form
-        setFormData({
-            merchant: "",
-            amount: "",
-            category: "Food & Dining",
-            date: new Date().toISOString().split("T")[0],
-            raw_text: "",
-        });
-
-        setShowAddForm(false);
-    } catch (err) {
-        console.error("Unexpected error:", err);
+    } catch (error) {
+      console.error("Save failed:", error);
+      alert("Could not save transaction.");
     }
   };
 
+  const filteredTransactions = transactions.filter(t => {
+    const merchantName = t.merchant ? t.merchant.toLowerCase() : '';
+    const catName = typeof t.category === 'string' ? t.category.toLowerCase() : (t.category?.name.toLowerCase() || '');
+    return merchantName.includes(searchTerm.toLowerCase()) || catName.includes(searchTerm.toLowerCase());
+  });
+
   return (
-    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-slate-900">Recent Transactions</h2>
+    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col h-[500px] relative">
+      <div className="p-6 border-b border-slate-100 flex items-center justify-between gap-4">
+        <h2 className="text-lg font-semibold text-slate-900">Transactions</h2>
+        <div className="flex gap-3">
+             {/* Search Input ... */}
+            <div className="relative hidden sm:block">
+                <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+                <input
+                    type="text"
+                    placeholder="Search..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-48"
+                />
+            </div>
 
-        <button
-          onClick={() => setShowAddForm(!showAddForm)}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-        >
-          <Plus className="w-5 h-5" />
-          Add Transaction
-        </button>
+            <button onClick={() => setIsModalOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium">
+                <Plus className="w-4 h-4" />
+                <span>Add</span>
+            </button>
+        </div>
       </div>
 
-      {/* Add Transaction Form */}
-      {showAddForm && (
-        <form onSubmit={handleAddTransaction} className="mb-6 p-4 bg-slate-50 rounded-xl space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-slate-700 text-sm mb-2">Merchant</label>
-              <input
-                type="text"
-                value={formData.merchant}
-                onChange={(e) => setFormData({ ...formData, merchant: e.target.value })}
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg"
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-slate-700 text-sm mb-2">Amount ($)</label>
-              <input
-                type="number"
-                step="0.01"
-                value={formData.amount}
-                onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg"
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-slate-700 text-sm mb-2">Category</label>
-              <select
-                value={formData.category}
-                onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg"
-              >
-                <option>Food & Dining</option>
-                <option>Transportation</option>
-                <option>Shopping</option>
-                <option>Bills & Utilities</option>
-                <option>Income</option>
-                <option>Other</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-slate-700 text-sm mb-2">Date</label>
-              <input
-                type="date"
-                value={formData.date}
-                onChange={(e) => setFormData({ ...formData, date: e.target.value })}
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg"
-                required
-              />
-            </div>
-          </div>
-
-          <div className="flex gap-2">
-            <button
-              type="submit"
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              Add Transaction
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowAddForm(false)}
-              className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300 transition-colors"
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      )}
-
-      {/* Transaction List */}
-      <div className="space-y-2">
-        {transactions.map((transaction) => {
-          // FIX 1: Safe name extraction
-          const categoryName = getSafeCategoryName(transaction.category);
-          
-          // FIX 2: Safe icon lookup
-          const Icon = categoryIcons[categoryName] || MoreHorizontal;
-          const isIncome = categoryName === 'Income';
-
-          // Ensure date is valid before rendering
-          const dateObj = new Date(transaction.date_time);
-          const dateStr = isNaN(dateObj.getTime()) ? 'Invalid Date' : dateObj.toLocaleDateString();
-
-          return (
-            <div
-              key={transaction.trans_id}
-              className="flex items-center gap-4 p-3 hover:bg-slate-50 rounded-lg transition-colors"
-            >
-              <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                isIncome ? 'bg-green-100' : 'bg-blue-100'
-              }`}>
-                <Icon className={`w-5 h-5 ${
-                  isIncome ? 'text-green-600' : 'text-blue-600'
-                }`} />
-              </div>
-
-              <div className="flex-1">
-                {/* FIX 3: Use categoryName string, not the object */}
-                <p className="text-slate-900">{transaction.merchant || categoryName}</p>
-                <div className="flex items-center gap-2 text-sm text-slate-600">
-                  <Tag className="w-4 h-4" />
-                  <span>{categoryName}</span>
-                  <span>•</span>
-                  <Calendar className="w-4 h-4" />
-                  <span>{dateStr}</span>
+      <div className="flex-1 overflow-y-auto">
+        {loading ? (
+           <div className="h-full flex items-center justify-center"><Loader2 className="animate-spin text-blue-500"/></div>
+        ) : filteredTransactions.length === 0 ? (
+          <div className="h-full flex items-center justify-center text-slate-400 text-sm">No transactions found</div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {filteredTransactions.map((t) => {
+               /* ... Rendering Logic ... */
+               const catName = typeof t.category === 'string' ? t.category : (t.category?.name || 'Unknown');
+               const isIncome = catName === 'Income';
+               return (
+                <div key={t.trans_id} className="p-4 flex items-center justify-between hover:bg-slate-50">
+                   <div className="flex items-center gap-4">
+                      <div className={`w-10 h-10 rounded-full flex items-center justify-center ${isIncome ? 'bg-green-100 text-green-600' : 'bg-slate-100 text-slate-600'}`}>
+                        {isIncome ? <ArrowDownLeft className="w-5 h-5"/> : <ArrowUpRight className="w-5 h-5"/>}
+                      </div>
+                      <div>
+                        <h4 className="font-medium text-slate-900">{t.merchant}</h4>
+                        <p className="text-xs text-slate-500">{catName}</p>
+                      </div>
+                   </div>
+                   <span className={`font-semibold ${isIncome ? 'text-green-600' : 'text-slate-900'}`}>
+                     {isIncome ? '+' : '-'}${Math.abs(t.amount).toFixed(2)}
+                   </span>
                 </div>
-              </div>
-
-              <div className={`${isIncome ? 'text-green-600' : 'text-slate-900'}`}>
-                {isIncome ? '+' : '-'}${Number(transaction.amount).toFixed(2)}
-              </div>
-            </div>
-          );
-        })}
+               );
+            })}
+          </div>
+        )}
       </div>
+
+      <AddTransactionModal 
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        onSave={handleSaveTransaction}
+        categories={categories}
+      />
     </div>
   );
 }

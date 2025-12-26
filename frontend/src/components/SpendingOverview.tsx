@@ -1,4 +1,4 @@
-import { TrendingUp, TrendingDown, Wallet, CreditCard } from 'lucide-react';
+import { TrendingDown, Wallet, CreditCard } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from 'recharts';
 import { Transaction } from '../types/database';
 
@@ -18,11 +18,22 @@ export function SpendingOverview({ transactions }: SpendingOverviewProps) {
   };
 
   transactions.forEach((t) => {
-    if (t.category !== 'Income') {
-      if (categoryData[t.category]) {
-        categoryData[t.category].value += t.amount;
+    // 1. FIXED: Safely get category name (String) from the Transaction object
+    let catName = 'Other';
+    if (typeof t.category === 'string') {
+        catName = t.category;
+    } else if (t.category && typeof t.category === 'object') {
+        catName = t.category.name;
+    }
+
+    // 2. Skip Income
+    if (catName !== 'Income') {
+      if (categoryData[catName]) {
+        categoryData[catName].value += Number(t.amount);
       } else {
-        categoryData['Other'].value += t.amount;
+        // Fallback for categories not in the pre-defined list above
+        // We accumulate them into 'Other' to prevent crashes
+        categoryData['Other'].value += Number(t.amount);
       }
     }
   });
@@ -36,7 +47,12 @@ export function SpendingOverview({ transactions }: SpendingOverviewProps) {
     }));
 
   const totalSpent = data.reduce((sum, item) => sum + item.value, 0);
-  const transactionCount = transactions.filter(t => t.category !== 'Income').length;
+  
+  // Count transactions that are not income
+  const transactionCount = transactions.filter(t => {
+      const cName = typeof t.category === 'object' && t.category ? t.category.name : String(t.category);
+      return cName !== 'Income';
+  }).length;
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
@@ -51,7 +67,7 @@ export function SpendingOverview({ transactions }: SpendingOverviewProps) {
             </div>
             <div className="flex-1">
               <p className="text-sm text-blue-900/70">Total Spent</p>
-              <p className="text-blue-900">${totalSpent.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+              <p className="text-blue-900 font-bold">${totalSpent.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
             </div>
           </div>
         </div>
@@ -63,7 +79,7 @@ export function SpendingOverview({ transactions }: SpendingOverviewProps) {
             </div>
             <div className="flex-1">
               <p className="text-sm text-green-900/70">vs Last Month</p>
-              <p className="text-green-900">-12.5%</p>
+              <p className="text-green-900 font-bold">-12.5%</p>
             </div>
           </div>
         </div>
@@ -75,7 +91,7 @@ export function SpendingOverview({ transactions }: SpendingOverviewProps) {
             </div>
             <div className="flex-1">
               <p className="text-sm text-purple-900/70">Transactions</p>
-              <p className="text-purple-900">{transactionCount}</p>
+              <p className="text-purple-900 font-bold">{transactionCount}</p>
             </div>
           </div>
         </div>

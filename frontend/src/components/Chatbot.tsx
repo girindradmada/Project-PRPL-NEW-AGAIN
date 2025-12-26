@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, AlertTriangle, Move } from 'lucide-react';
-import { BudgetAlert, Transaction, Budget, ChatLog } from '../types/database';
+import { Send, Bot, User, AlertTriangle, Move, Loader2 } from 'lucide-react';
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { BudgetAlert, Transaction, Budget } from '../types/database';
 
 interface Message {
   log_id: number;
@@ -17,23 +18,26 @@ interface ChatbotProps {
   budgets: Budget[];
 }
 
-const botResponses = [
-  "Based on your spending patterns, you're doing great with your food budget! You're 17% under budget this month.",
-  "Your transportation costs are very consistent. You're averaging $170/week, which is well within your budget.",
-  "Great news! You've saved $400 this month compared to last month. Keep up the good work!",
-  "I can help you create a savings plan. What's your target amount and timeframe?",
-  "Let me analyze your recent transactions to find potential savings opportunities.",
-];
-
 export function Chatbot({ onClose, budgetAlerts, transactions, budgets }: ChatbotProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  
+  // Dragging logic state
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const alertsProcessed = useRef<Set<number>>(new Set());
   const chatbotRef = useRef<HTMLDivElement>(null);
+
+  // --- 1. INITIALIZE GEMINI ---
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
+  if (!apiKey) {
+    console.warn("⚠️ VITE_GEMINI_API_KEY is missing in .env file");
+  }
+  const genAI = new GoogleGenerativeAI(apiKey);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -41,32 +45,107 @@ export function Chatbot({ onClose, budgetAlerts, transactions, budgets }: Chatbo
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, isLoading]);
 
-  // Initialize with welcome message
+  // --- 2. DATABASE SYNC FUNCTIONS (NEW) ---
+
+  // A. Save a single message to the database
+  const saveMessageToDB = async (msg: Message) => {
+    try {
+        await fetch('http://localhost:5000/api/save-chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                user_id: msg.user_id,
+                message_text: msg.message_text,
+                sender: msg.sender,
+                timestamp: msg.timestamp 
+            })
+        });
+    } catch (error) {
+        console.error("Failed to save message to DB:", error);
+    }
+  };
+
+  // B. Fetch old chat history when component loads
+  const fetchChatHistory = async () => {
+    try {
+      // Hardcoded user_id=1 for this prototype
+      // Change 3000 to 5000
+      const response = await fetch('http://localhost:5000/api/chat-history/1');
+      
+      if (response.ok) {
+        const history: any[] = await response.json();
+        
+        if (history.length > 0) {
+            // Convert SQL timestamp strings back to Date objects
+            const formattedHistory: Message[] = history.map(msg => ({
+                ...msg,
+                timestamp: new Date(msg.timestamp)
+            }));
+            setMessages(formattedHistory);
+        } else {
+            // If DB is empty, set the default Welcome Message
+            const welcomeMessage: Message = {
+                log_id: Date.now(),
+                user_id: 1,
+                message_text: "Hello! I'm powered by Gemini AI. I can see all your transactions and budgets. Ask me anything about your finances!",
+                sender: 'Bot',
+                timestamp: new Date(),
+            };
+            setMessages([welcomeMessage]);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to load chat history:", error);
+      // Fallback to welcome message on error
+      const welcomeMessage: Message = {
+        log_id: Date.now(),
+        user_id: 1,
+        message_text: "Hello! I'm powered by Gemini AI. (Offline Mode)",
+        sender: 'Bot',
+        timestamp: new Date(),
+      };
+      setMessages([welcomeMessage]);
+    }
+  };
+
+  // --- 3. EFFECTS ---
+
+  // Load History on Mount OR show Welcome Message if DB is empty
   useEffect(() => {
-    const welcomeMessage: Message = {
-      log_id: Date.now(),
-      user_id: 1,
-      message_text: "Hello! I'm your personal financial assistant. I can help you analyze your spending, create budgets, and answer questions about your finances. How can I help you today?",
-      sender: 'Bot',
-      timestamp: new Date(),
-    };
-    setMessages([welcomeMessage]);
+    // Attempt to fetch history from DB first
+    fetchChatHistory().then(() => {
+        // We check messages.length inside a setMessages update to ensure we have the latest state
+        setMessages(prev => {
+            // If previous state is empty (meaning DB returned nothing), add welcome message
+            if (prev.length === 0) {
+                const welcomeMessage: Message = {
+                    log_id: Date.now(),
+                    user_id: 1,
+                    message_text: "Hello! I'm powered by Gemini AI. I can see all your transactions and budgets. Ask me anything about your finances!",
+                    sender: 'Bot',
+                    timestamp: new Date(),
+                };
+                return [welcomeMessage];
+            }
+            // If DB had data, leave it alone
+            return prev;
+        });
+    });
   }, []);
 
-  // Monitor budget alerts and send notifications
+  // Monitor budget alerts
   useEffect(() => {
     budgetAlerts.forEach((alert) => {
-      // Only send alert message if we haven't processed this budget_id yet
       if (!alertsProcessed.current.has(alert.budget_id)) {
         alertsProcessed.current.add(alert.budget_id);
         
         let alertMessage = '';
         if (alert.severity === 'critical') {
-          alertMessage = `🚨 BUDGET ALERT: You've exceeded your ${alert.category} budget! You've spent $${alert.spent.toFixed(2)} of your $${alert.limit.toFixed(2)} limit (${alert.percentage.toFixed(0)}%). Consider reducing spending in this category.`;
+          alertMessage = `🚨 BUDGET ALERT: You've exceeded your ${alert.category} budget! Used ${alert.percentage.toFixed(0)}%.`;
         } else {
-          alertMessage = `⚠️ WARNING: You're approaching your ${alert.category} budget limit. You've used ${alert.percentage.toFixed(0)}% ($${alert.spent.toFixed(2)} of $${alert.limit.toFixed(2)}). You have $${(alert.limit - alert.spent).toFixed(2)} remaining.`;
+          alertMessage = `⚠️ WARNING: You're approaching your ${alert.category} budget limit (${alert.percentage.toFixed(0)}%).`;
         }
 
         const alertMsg: Message = {
@@ -82,43 +161,72 @@ export function Chatbot({ onClose, budgetAlerts, transactions, budgets }: Chatbo
     });
   }, [budgetAlerts]);
 
-  // Handle dragging
+  // Handle Dragging Logic
   const handleMouseDown = (e: React.MouseEvent) => {
     setIsDragging(true);
-    setDragStart({
-      x: e.clientX - position.x,
-      y: e.clientY - position.y,
-    });
+    setDragStart({ x: e.clientX - position.x, y: e.clientY - position.y });
   };
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (isDragging) {
-        const newX = e.clientX - dragStart.x;
-        const newY = e.clientY - dragStart.y;
-        setPosition({ x: newX, y: newY });
+        setPosition({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
       }
     };
-
-    const handleMouseUp = () => {
-      setIsDragging(false);
-    };
+    const handleMouseUp = () => setIsDragging(false);
 
     if (isDragging) {
       document.addEventListener('mousemove', handleMouseMove);
       document.addEventListener('mouseup', handleMouseUp);
     }
-
     return () => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
   }, [isDragging, dragStart]);
 
-  const handleSend = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!inputValue.trim()) return;
+  // --- 4. CORE AI LOGIC ---
 
+  const generateSystemPrompt = () => {
+    if (!transactions || !budgets) { 
+        return "System: Financial data is currently loading..."; 
+    }
+
+    const simplifiedTransactions = transactions.map(t => {
+        const dateStr = new Date(t.date_time).toLocaleDateString();
+        const descStr = t.merchant || t.raw_text || 'Unknown Merchant';
+        const catStr = typeof t.category === 'string' ? t.category : t.category?.name || 'Uncategorized';
+        return `${dateStr}: $${t.amount} on ${catStr} (${descStr})`;
+    }).join('\n');
+
+    const simplifiedBudgets = budgets.map(b => {
+        const budgetCat = typeof b.category === 'string' ? b.category : b.category?.name || 'General';
+        return `Category: ${budgetCat}, Limit: $${b.limit_amount}`;
+    }).join('\n');
+
+    return `
+      You are a helpful financial assistant named SpendWise.
+      Here is the user's current financial data:
+      
+      --- BUDGETS ---
+      ${simplifiedBudgets}
+      
+      --- RECENT TRANSACTIONS ---
+      ${simplifiedTransactions}
+      
+      INSTRUCTIONS:
+      1. Answer the user's question based strictly on the data above.
+      2. If they ask about savings, calculate (Total Income - Total Expenses).
+      3. Be concise, friendly, and encouraging.
+      4. If the data doesn't answer the question, say you don't see that info in their recent records.
+    `;
+  };
+
+  const handleSend = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inputValue.trim() || isLoading) return;
+
+    // 1. Create User Message object
     const userMessage: Message = {
       log_id: Date.now(),
       user_id: 1,
@@ -127,63 +235,62 @@ export function Chatbot({ onClose, budgetAlerts, transactions, budgets }: Chatbo
       timestamp: new Date(),
     };
 
+    // 2. Update UI & Save to DB
     setMessages((prev) => [...prev, userMessage]);
-    const userQuery = inputValue.toLowerCase();
     setInputValue('');
+    setIsLoading(true);
+    
+    // 🔥 Fire and forget save to DB
+    saveMessageToDB(userMessage);
 
-    // Simulate bot response based on query
-    setTimeout(() => {
-      let botResponseText = '';
+    try {
+      // 3. Prepare Model (Using standard gemini-2.5-flash)
+      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-      // Context-aware responses based on actual data
-      if (userQuery.includes('food') || userQuery.includes('dining')) {
-        const foodBudget = budgets.find(b => b.category === 'Food & Dining');
-        const foodSpent = transactions
-          .filter(t => t.category === 'Food & Dining')
-          .reduce((sum, t) => sum + t.amount, 0);
+      const systemContext = generateSystemPrompt();
+      const chatHistory = messages.slice(-5).map(m => `${m.sender}: ${m.message_text}`).join('\n');
+      
+      const fullPrompt = `
+        ${systemContext}
         
-        if (foodBudget) {
-          const percentage = ((foodSpent / foodBudget.limit_amount) * 100).toFixed(0);
-          botResponseText = `You've spent $${foodSpent.toFixed(2)} on Food & Dining this month, which is ${percentage}% of your $${foodBudget.limit_amount.toFixed(2)} budget. You have $${(foodBudget.limit_amount - foodSpent).toFixed(2)} remaining.`;
-        }
-      } else if (userQuery.includes('budget') || userQuery.includes('over')) {
-        const overBudget = budgetAlerts.filter(a => a.severity === 'critical');
-        const warning = budgetAlerts.filter(a => a.severity === 'warning');
+        --- CONVERSATION HISTORY ---
+        ${chatHistory}
         
-        if (overBudget.length > 0) {
-          botResponseText = `You currently have ${overBudget.length} categor${overBudget.length === 1 ? 'y' : 'ies'} over budget: ${overBudget.map(a => a.category).join(', ')}. `;
-        }
-        if (warning.length > 0) {
-          botResponseText += `${warning.length} categor${warning.length === 1 ? 'y is' : 'ies are'} approaching the limit (${'>'}90%): ${warning.map(a => a.category).join(', ')}.`;
-        }
-        if (overBudget.length === 0 && warning.length === 0) {
-          botResponseText = "Good news! All your budgets are looking healthy. You're staying within your limits across all categories.";
-        }
-      } else if (userQuery.includes('savings') || userQuery.includes('save')) {
-        const totalBudget = budgets.reduce((sum, b) => sum + b.limit_amount, 0);
-        const totalSpent = transactions
-          .filter(t => t.category !== 'Income')
-          .reduce((sum, t) => sum + t.amount, 0);
-        botResponseText = `You've saved $${(totalBudget - totalSpent).toFixed(2)} this month! To save more, I recommend: 1) Reduce dining out expenses, 2) Look for subscription services you're not using, 3) Set up automatic transfers to a savings account.`;
-      } else if (userQuery.includes('total') || userQuery.includes('spent')) {
-        const totalSpent = transactions
-          .filter(t => t.category !== 'Income')
-          .reduce((sum, t) => sum + t.amount, 0);
-        botResponseText = `Your total spending this month is $${totalSpent.toFixed(2)} across ${transactions.filter(t => t.category !== 'Income').length} transactions.`;
-      } else {
-        // Random helpful response
-        botResponseText = botResponses[Math.floor(Math.random() * botResponses.length)];
-      }
+        User: ${userMessage.message_text}
+        Bot:
+      `;
 
+      // 4. Call API
+      const result = await model.generateContent(fullPrompt);
+      const response = await result.response;
+      const text = response.text();
+
+      // 5. Create Bot Message object
       const botMessage: Message = {
         log_id: Date.now() + 1,
         user_id: 1,
-        message_text: botResponseText,
+        message_text: text,
         sender: 'Bot',
         timestamp: new Date(),
       };
+
+      // 6. Update UI & Save to DB
       setMessages((prev) => [...prev, botMessage]);
-    }, 1000);
+      saveMessageToDB(botMessage);
+
+    } catch (error) {
+      console.error("Gemini Error:", error);
+      const errorMessage: Message = {
+        log_id: Date.now() + 1,
+        user_id: 1,
+        message_text: "Sorry, I'm having trouble connecting to my brain right now.",
+        sender: 'Bot',
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -209,10 +316,12 @@ export function Chatbot({ onClose, budgetAlerts, transactions, budgets }: Chatbo
         <div className="flex-1">
           <h3>Financial Assistant</h3>
           <p className="text-sm text-blue-100">
-            {budgetAlerts.length > 0 ? `${budgetAlerts.length} Active Alert${budgetAlerts.length > 1 ? 's' : ''}` : 'Online'}
+            {isLoading ? 'Analyzing...' : 'Powered by Gemini'}
           </p>
         </div>
-        <Move className="w-5 h-5 text-white/60" />
+        <div className="cursor-pointer hover:bg-white/20 p-1 rounded" onClick={onClose}>
+             <Move className="w-5 h-5 text-white/60" />
+        </div>
       </div>
 
       {/* Budget Alerts Banner */}
@@ -221,11 +330,8 @@ export function Chatbot({ onClose, budgetAlerts, transactions, budgets }: Chatbo
           <AlertTriangle className="w-5 h-5 text-orange-600 flex-shrink-0 mt-0.5" />
           <div className="flex-1">
             <p className="text-sm text-orange-900">
-              {budgetAlerts.filter(a => a.severity === 'critical').length > 0 
-                ? `${budgetAlerts.filter(a => a.severity === 'critical').length} budget(s) exceeded`
-                : `${budgetAlerts.length} budget warning(s)`}
+              {budgetAlerts.length} budget warning(s) active
             </p>
-            <p className="text-xs text-orange-700">Check messages for details</p>
           </div>
         </div>
       )}
@@ -246,63 +352,36 @@ export function Chatbot({ onClose, budgetAlerts, transactions, budgets }: Chatbo
                   : 'bg-slate-200 text-slate-600'
               }`}
             >
-              {message.sender === 'User' ? (
-                <User className="w-5 h-5" />
-              ) : (
-                <Bot className="w-5 h-5" />
-              )}
+              {message.sender === 'User' ? <User className="w-5 h-5" /> : <Bot className="w-5 h-5" />}
             </div>
             <div
               className={`max-w-[75%] rounded-2xl px-4 py-2 ${
                 message.sender === 'User'
                   ? 'bg-blue-600 text-white rounded-tr-sm'
-                  : message.message_text.includes('🚨') || message.message_text.includes('⚠️')
+                  : message.message_text.includes('🚨')
                   ? 'bg-orange-50 text-orange-900 rounded-tl-sm border border-orange-200'
-                  : 'bg-white text-slate-900 rounded-tl-sm border border-slate-200'
+                  : 'bg-white text-slate-900 rounded-tl-sm border border-slate-200 shadow-sm'
               }`}
             >
-              <p className="text-sm">{message.message_text}</p>
-              <p
-                className={`text-xs mt-1 ${
-                  message.sender === 'User' ? 'text-blue-100' : 
-                  message.message_text.includes('🚨') || message.message_text.includes('⚠️')
-                    ? 'text-orange-700'
-                    : 'text-slate-500'
-                }`}
-              >
-                {message.timestamp.toLocaleTimeString([], {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
+              <p className="text-sm whitespace-pre-wrap leading-relaxed">{message.message_text}</p>
+              <p className="text-xs mt-1 opacity-70">
+                {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </p>
             </div>
           </div>
         ))}
+        {isLoading && (
+            <div className="flex gap-3">
+                 <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center animate-pulse">
+                    <Bot className="w-5 h-5 text-slate-500" />
+                 </div>
+                 <div className="bg-white px-4 py-3 rounded-2xl rounded-tl-sm border border-slate-200 shadow-sm flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+                    <span className="text-sm text-slate-500">Thinking...</span>
+                 </div>
+            </div>
+        )}
         <div ref={messagesEndRef} />
-      </div>
-
-      {/* Suggested Questions */}
-      <div className="px-4 py-2 border-t border-slate-200 bg-white">
-        <div className="flex gap-2 overflow-x-auto pb-2">
-          <button
-            onClick={() => setInputValue('How much did I spend on food this month?')}
-            className="px-3 py-1 bg-slate-100 text-slate-700 rounded-full text-sm whitespace-nowrap hover:bg-slate-200 transition-colors"
-          >
-            Food spending?
-          </button>
-          <button
-            onClick={() => setInputValue('Am I over budget?')}
-            className="px-3 py-1 bg-slate-100 text-slate-700 rounded-full text-sm whitespace-nowrap hover:bg-slate-200 transition-colors"
-          >
-            Budget status?
-          </button>
-          <button
-            onClick={() => setInputValue('Give me savings tips')}
-            className="px-3 py-1 bg-slate-100 text-slate-700 rounded-full text-sm whitespace-nowrap hover:bg-slate-200 transition-colors"
-          >
-            Savings tips
-          </button>
-        </div>
       </div>
 
       {/* Input */}
@@ -312,12 +391,14 @@ export function Chatbot({ onClose, budgetAlerts, transactions, budgets }: Chatbo
             type="text"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            placeholder="Ask me anything..."
-            className="flex-1 px-4 py-2 border border-slate-200 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500"
+            disabled={isLoading}
+            placeholder={isLoading ? "Please wait..." : "Ask me anything..."}
+            className="flex-1 px-4 py-2 border border-slate-200 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-50 disabled:text-slate-400"
           />
           <button
             type="submit"
-            className="w-10 h-10 bg-blue-600 text-white rounded-full flex items-center justify-center hover:bg-blue-700 transition-colors"
+            disabled={isLoading || !inputValue.trim()}
+            className="w-10 h-10 bg-blue-600 text-white rounded-full flex items-center justify-center hover:bg-blue-700 transition-colors disabled:bg-slate-300 disabled:cursor-not-allowed"
           >
             <Send className="w-5 h-5" />
           </button>

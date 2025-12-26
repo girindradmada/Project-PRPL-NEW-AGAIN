@@ -1,10 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { LogOut, MessageCircle, X, Bell } from 'lucide-react';
 import { TransactionLogger } from './TransactionLogger';
 import { BudgetsTable } from './BudgetsTable';
 import { SpendingOverview } from './SpendingOverview';
 import { Chatbot } from './Chatbot';
-import { BudgetAlert, Transaction, Budget } from '../types/database';
+import { BudgetAlert, Transaction, Budget, Category } from '../types/database';
 
 interface DashboardProps {
   onLogout: () => void;
@@ -14,71 +14,81 @@ interface DashboardProps {
 
 export function Dashboard({ onLogout, budgetAlerts, setBudgetAlerts }: DashboardProps) {
   const [isChatbotOpen, setIsChatbotOpen] = useState(false);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [budgets, setBudgets] = useState<Budget[]>([]);
   const [hasNewAlert, setHasNewAlert] = useState(false);
 
-  // Monitor budgets and trigger alerts
-  useEffect(() => {
-    checkBudgetThresholds();
-  }, [transactions, budgets]);
+  // Dashboard simply holds the data
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [budgets, setBudgets] = useState<Budget[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
 
-  const checkBudgetThresholds = () => {
+  // We rely on child components to populate this data via callbacks
+  const handleTransactionsLoaded = (data: Transaction[], cats: Category[]) => {
+    setTransactions(data);
+    setCategories(cats);
+  };
+
+  const handleBudgetsLoaded = (data: Budget[]) => {
+    setBudgets(data);
+    // Trigger alert check whenever budgets load or change
+    checkBudgetThresholds(data, transactions);
+  };
+
+  // Logic for UI Alerts (Pure JS, no database)
+  const checkBudgetThresholds = (currentBudgets: Budget[], currentTransactions: Transaction[]) => {
     const newAlerts: BudgetAlert[] = [];
     
-    budgets.forEach((budget) => {
-      const categorySpent = transactions
-        .filter(t => t.category === budget.category)
+    currentBudgets.forEach((budget) => {
+      let budgetCatName = typeof budget.category === 'string' ? budget.category : (budget.category?.name || 'Unknown');
+      
+      const categorySpent = currentTransactions
+        .filter(t => {
+           let tCatName = typeof t.category === 'string' ? t.category : (t.category?.name || 'Unknown');
+           return tCatName === budgetCatName;
+        })
         .reduce((sum, t) => sum + t.amount, 0);
       
+      if (!budget.limit_amount || budget.limit_amount === 0) return;
+
       const percentage = (categorySpent / budget.limit_amount) * 100;
       
-      // Trigger alert at 90% (warning) or 100% (critical)
       if (percentage >= 90) {
-        const alert: BudgetAlert = {
+        newAlerts.push({
           budget_id: budget.budget_id,
-          category: budget.category,
+          category: budgetCatName,
           percentage,
           spent: categorySpent,
           limit: budget.limit_amount,
           severity: percentage >= 100 ? 'critical' : 'warning'
-        };
-        newAlerts.push(alert);
+        });
       }
     });
 
-    // Check if there are new alerts
-    if (newAlerts.length > budgetAlerts.length) {
-      setHasNewAlert(true);
-    }
-    
+    if (newAlerts.length > budgetAlerts.length) setHasNewAlert(true);
     setBudgetAlerts(newAlerts);
   };
 
-  const handleChatbotOpen = () => {
-    setIsChatbotOpen(true);
-    setHasNewAlert(false);
-  };
-
   return (
-    <div className="min-h-screen">
-      {/* Header */}
+    <div className="min-h-screen bg-slate-50">
+      {/* Header - Restored Design */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
+            {/* Restored Gradient Logo */}
             <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-blue-700 rounded-xl flex items-center justify-center">
-              <span className="text-white">$</span>
+              <span className="text-white font-bold text-xl">$</span>
             </div>
             <div>
-              <h1 className="text-slate-900">SpendWise</h1>
+              <h1 className="text-slate-900 font-bold text-lg">SpendWise</h1>
+              {/* Restored Personal Greeting */}
               <p className="text-sm text-slate-600">Welcome back, Sarah</p>
             </div>
           </div>
+
           <div className="flex items-center gap-3">
             {budgetAlerts.length > 0 && (
-              <div className="flex items-center gap-2 px-3 py-2 bg-red-50 text-red-700 rounded-lg">
+              <div className="flex items-center gap-2 px-3 py-2 bg-red-50 text-red-700 rounded-lg animate-pulse">
                 <Bell className="w-5 h-5" />
-                <span className="text-sm">{budgetAlerts.length} Budget Alert{budgetAlerts.length > 1 ? 's' : ''}</span>
+                <span className="text-sm font-medium">{budgetAlerts.length} Budget Alert{budgetAlerts.length > 1 ? 's' : ''}</span>
               </div>
             )}
             <button
@@ -98,9 +108,17 @@ export function Dashboard({ onLogout, budgetAlerts, setBudgetAlerts }: Dashboard
           {/* Left Column - Overview and Transactions */}
           <div className="lg:col-span-2 space-y-6">
             <SpendingOverview transactions={transactions} />
+            
+            {/* Using your existing logic props */}
             <TransactionLogger 
               transactions={transactions} 
-              setTransactions={setTransactions}
+              categories={categories}
+              onDataLoaded={handleTransactionsLoaded}
+              onTransactionAdded={(newTx) => {
+                 const updated = [newTx, ...transactions];
+                 setTransactions(updated);
+                 checkBudgetThresholds(budgets, updated);
+              }}
             />
           </div>
 
@@ -109,26 +127,25 @@ export function Dashboard({ onLogout, budgetAlerts, setBudgetAlerts }: Dashboard
             <BudgetsTable 
               budgets={budgets}
               setBudgets={setBudgets}
+              onBudgetsLoaded={handleBudgetsLoaded}
               transactions={transactions}
               budgetAlerts={budgetAlerts}
+              categories={categories}
             />
           </div>
         </div>
       </main>
 
-      {/* Chatbot Button */}
+      {/* Floating Chatbot Button - Restored Design */}
       <button
         onClick={() => {
-          if (isChatbotOpen) {
-            setIsChatbotOpen(false);
-          } else {
-            handleChatbotOpen();
-          }
+          setIsChatbotOpen(!isChatbotOpen);
+          setHasNewAlert(false); // Clear notification dot on click
         }}
-          className={
-            "fixed bottom-6 right-6 w-16 h-16 bg-gradient-to-br from-blue-600 to-blue-700 text-white " +
-            "rounded-full shadow-lg hover:shadow-xl transition-all hover:scale-110 flex items-center justify-center z-50"
-          }
+        className={
+          "fixed bottom-6 right-6 w-16 h-16 bg-gradient-to-br from-blue-600 to-blue-700 text-white " +
+          "rounded-full shadow-lg hover:shadow-xl transition-all hover:scale-110 flex items-center justify-center z-50"
+        }
         aria-label="Toggle financial chatbot"
       >
         {isChatbotOpen ? (

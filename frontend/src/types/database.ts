@@ -47,6 +47,8 @@ export interface ChatLog {
   message_text: string;
   sender: 'User' | 'Bot';
   timestamp: Date;
+
+  
 }
 
 export interface BudgetAlert {
